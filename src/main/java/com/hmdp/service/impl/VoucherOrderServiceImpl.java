@@ -334,20 +334,38 @@ public class VoucherOrderServiceImpl extends ServiceImpl<VoucherOrderMapper, Vou
     @Transactional
     public boolean closeTimeoutOrder(Long orderId) {
         VoucherOrder order = getById(orderId);
-        if (order == null || order.getStatus() == null || order.getStatus() != 1) {
+
+        if (order == null) {
+            throw new IllegalStateException("订单不存在，orderId=" + orderId);
+        }
+
+        // 已支付、已关闭等状态属于幂等场景，无需重试
+        if (!Integer.valueOf(1).equals(order.getStatus())) {
             return false;
         }
-        boolean updated = update()
+
+        boolean closed = update()
                 .eq("id", orderId)
                 .eq("status", 1)
                 .set("status", 4)
                 .update();
-        if (updated) {
-            seckillVoucherService.update()
-                    .setSql("stock = stock + 1")
-                    .eq("voucher_id", order.getVoucherId())
-                    .update();
+
+        // 可能已经被支付回调或其他关单任务处理
+        if (!closed) {
+            return false;
         }
-        return updated;
+
+        boolean stockRestored = seckillVoucherService.update()
+                .setSql("stock = stock + 1")
+                .eq("voucher_id", order.getVoucherId())
+                .update();
+
+        if (!stockRestored) {
+            throw new IllegalStateException(
+                    "订单已关闭但库存恢复失败，orderId=" + orderId
+            );
+        }
+
+        return true;
     }
 }
